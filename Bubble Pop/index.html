@@ -8,7 +8,7 @@
 <!-- Build number. Shown in the panel before you enter VR, so you can tell at a
      glance whether the headset is running your newest version. The publish
      step increments this automatically whenever the file has changed. -->
-<script>window.BUILD = 1;</script>
+<script>window.BUILD = 2;</script>
 
 <!-- Controls shown on the panel, in two lists. When you add an interaction to
      the scene (grab, throw, press), add a line to `headset` so players know. -->
@@ -16,7 +16,10 @@
 window.KIT_CONTROLS = {
   headset: [
     'Press the VR button to enter',
-    'Trigger: throw a dart at the bubbles',
+    'Reach to a dart rack beside you — the dart you can reach lights up',
+    'Trigger or grip: pick up the dart your hand is on',
+    'Let go while swinging your arm: the dart flies the way you threw it',
+    'Darts you drop find their own way back to the rack',
     'Point at the "Start again" sign and squeeze the trigger for a fresh wall',
     'Left thumbstick: move',
     'Right thumbstick left / right: turn 45°',
@@ -25,7 +28,8 @@ window.KIT_CONTROLS = {
   desktop: [
     'Right-click and drag to look around',
     'Left-click: press what the centre ring points at (the trigger)',
-    'Left-click anywhere else: throw a dart towards the centre ring',
+    'Hold left-click anywhere else: pick up a dart',
+    'Let the button go: the dart is thrown along the centre ring',
     'W, A, S, D: move',
     'Q / E: turn',
     'Something wrong? Press F — it marks the moment for Claude'
@@ -49,27 +53,67 @@ function bubblePop() {
   return el && el.components && el.components['bubble-pop-game'];
 }
 window.KIT_CHECKS = [
-  { name: 'a dart flies out when you press the trigger', run: function (t) {
+  { name: 'there are darts waiting on the racks beside you', run: function (t) {
       var game = bubblePop();
       t.expect(game, 'the game is not running on #game');
-      var darts = t.count('.dart'), thrown = game.thrown, popped = game.popped;
-      t.press('right', 'trigger');
-      // Look quickly: a dart aimed straight ahead reaches the wall in about 0.2 s
-      // and is gone the moment it bursts a bubble.
-      return t.wait(80).then(function () {
-        t.expect(game.thrown === thrown + 1, 'pressing the trigger did not throw a dart');
-        t.expect(t.count('.dart') > darts || game.popped > popped, 'the dart never appeared in the scene');
+      t.expect(t.count('.dart') === 6, 'expected six darts on the two racks, found ' + t.count('.dart'));
+      var d = game.freeDart(), p = d && d.body.position;
+      t.expect(p, 'no dart is free to be picked up');
+      t.expect(p.y > 0.6 && p.y < 1.2, 'the darts are not lying at table height (found y = ' + p.y.toFixed(2) + ')');
+      t.expect(Math.hypot(p.x, p.z) < 1.0, 'the darts are too far from the player to reach');
+  } },
+  { name: 'you can pick up a dart and throw it', run: function (t) {
+      var game = bubblePop();
+      t.expect(game, 'the game is not running on #game');
+      var hand = t.find('#right-hand'), dart = game.freeDart();
+      t.expect(dart, 'there was no dart on the rack to pick up');
+      var p = { x: dart.body.position.x, y: dart.body.position.y, z: dart.body.position.z };
+      hand.object3D.position.set(p.x, p.y, p.z);              // put the hand on the dart
+      return t.wait(60).then(function () {
+        hand.emit('triggerdown');
+        t.expect(game.held.right === dart, 'squeezing the trigger with a hand on a dart did not pick it up');
+        // swing the arm forward over a few frames: the throw is as fast as the hand was
+        return [0.08, 0.16, 0.24, 0.32, 0.40].reduce(function (chain, step) {
+          return chain.then(function () {
+            hand.object3D.position.set(p.x, p.y + step * 0.25, p.z - step);
+            return t.wait(55);
+          });
+        }, Promise.resolve());
+      }).then(function () {
+        hand.emit('triggerup');
+        hand.object3D.position.set(0, 0, 0);
+        t.expect(!game.held.right, 'letting the trigger go did not release the dart');
+        var v = dart.body.velocity, speed = Math.hypot(v.x, v.y, v.z);
+        t.expect(speed > 1.5, 'the dart left the hand at ' + speed.toFixed(1) + ' m/s — a swing should throw it faster than that');
       });
   } },
-  { name: 'a dart bursts the bubble it is thrown at', run: function (t) {
+  { name: 'a thrown dart bursts the bubble it hits', run: function (t) {
       var game = bubblePop();
       t.expect(game, 'the game is not running on #game');
-      var left = game.aliveCount(), score = game.popped;
-      t.expect(left > 0, 'there were no bubbles on the wall to aim at');
-      t.expect(game.throwAtBubble(0), 'the dart was never thrown');
+      t.find('#head').object3D.position.set(0, 1.6, 0);        // back where the player started: the walk check left them at the wall
+      game.newGame();                                          // a full wall and every dart home, so the count is honest
+      return t.wait(80).then(function () {
+        var left = game.aliveCount(), score = game.popped;
+        t.expect(left > 0, 'there were no bubbles on the wall to aim at');
+        t.expect(game.throwAtBubble(0), 'the dart was never thrown');
+        return t.wait(900).then(function () {
+          t.expect(game.popped === score + 1, 'the dart flew straight at a bubble and it did not burst');
+          t.expect(game.aliveCount() === left - 1, 'the burst bubble is still on the wall');
+        });
+      });
+  } },
+  { name: 'a dart left lying about goes back to the rack', run: function (t) {
+      var game = bubblePop();
+      var d = game.freeDart();
+      t.expect(d, 'there were no darts to drop');
+      d.body.position.set(1.4, 0.0325, -1.2);                 // dropped on the floor, out of reach
+      d.body.velocity.set(0, 0, 0);
+      d.body.angularVelocity.set(0, 0, 0);
+      d.body.sleep();                                         // settled, the way a dart is a moment after it lands
+      d.restT = game.REST_SECS - 0.25;                        // as if it had already been lying there a while
       return t.wait(700).then(function () {
-        t.expect(game.popped === score + 1, 'the dart went straight at a bubble and it did not burst');
-        t.expect(game.aliveCount() === left - 1, 'the burst bubble is still on the wall');
+        var p = d.body.position, h = d.home;
+        t.expect(Math.hypot(p.x - h.x, p.y - h.y, p.z - h.z) < 0.25, 'the dart stayed on the floor instead of going home to the rack');
       });
   } },
   { name: 'a new wall appears once every bubble is popped', run: function (t) {
@@ -546,7 +590,7 @@ window.KIT = (function () {
 
 <!-- Libraries are bundled beside this file, never loaded from a CDN. -->
 <script src="./aframe.min.js"></script>
-<!--KIT-EXTRA-LIBS-->
+<script src="./cannon.iife.js"></script>
 
 <style>
   html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #cfe9f7; }
@@ -1446,83 +1490,465 @@ AFRAME.registerComponent('canvas-sign', {
 
 // The game. Its entity sits at the origin, so a bubble's local position is
 // also its world position — the dart hit-test relies on that.
+//
+// The darts are real objects: cannon-es bodies lying on two racks beside the
+// player. Reach out, squeeze to pick one up, swing and let go — the throw is
+// whatever the hand was doing at the moment of release. The bubbles stay
+// decoration: each dart's tip is tested against the segment it swept this
+// frame, which no physics step can skip past.
 AFRAME.registerComponent('bubble-pop-game', {
   schema: {
     cols: { default: 5 },
     rows: { default: 3 },
-    z:    { default: -3.0 }        // the wall stands 3 m in front of the player
+    z:    { default: -2.9 }        // the wall stands just under 3 m in front of the player
   },
 
   init: function () {
     var self = this, THREE = AFRAME.THREE;
 
-    this.COLORS  = ['#ff9db0', '#ffcf8a', '#9fe6c7', '#9fc9ff', '#d9b3ff'];
-    this.RADIUS  = 0.19;
-    this.SPEED   = 14;             // m/s — fast enough that aiming stays honest
-    this.GRAVITY = 3.0;            // m/s² — a visible arc, only ~7 cm of drop at the wall
-    this.TOLERANCE = 0.04;         // a little forgiveness on top of the bubble's radius
-    this.MAX_DARTS = 24;
+    this.COLORS    = ['#ff9db0', '#ffcf8a', '#9fe6c7', '#9fc9ff', '#d9b3ff'];
+    this.RADIUS    = 0.19;
+    this.TOLERANCE = 0.05;         // a little forgiveness on top of the bubble's radius
     this.REBUILD_MS = 1200;
+
+    this.GRAVITY    = 6.5;         // m/s² — a shade lighter than earth, so a thrown dart still flies roughly where it was aimed
+    this.DART_HALF  = 0.032;       // half the dart's width; its half-length is below
+    this.DART_LONG  = 0.11;
+    this.RACK_TOP   = 0.9;         // tabletop height, about a kitchen worktop
+    this.GRAB_REACH = 0.32;        // how near a hand has to be to pick a dart up
+    this.MAX_SPEED  = 12;          // cannon-es has no continuous collision: 15 m/s is the ceiling at 120 Hz, so stay under it
+    this.THROW_GAIN = 1.35;        // a hand trail reads about two-thirds of the real speed; this puts it back
+    this.REST_SECS  = 2.2;         // a dart lying still this long goes home to the rack
+    this.TRAIL      = 14;          // ~230 ms of hand positions at 60 Hz
 
     this.bubbles = [];
     this.darts   = [];
     this.popped  = 0;
     this.thrown  = 0;
     this.rebuildAt = 0;
-    this.lastThrow = { left: 0, right: 0 };
-    this.connected = { left: false, right: false };
+    this.held    = { left: null, right: null, head: null };
+    this.trails  = { left: [], right: [], head: [] };
 
     // scratch vectors, reused every frame
     this._a = new THREE.Vector3(); this._b = new THREE.Vector3();
-    this._c = new THREE.Vector3(); this._q = new THREE.Quaternion();
+    this._c = new THREE.Vector3(); this._d = new THREE.Vector3();
+    this._q = new THREE.Quaternion();
     this._up = new THREE.Vector3(0, 1, 0);
 
+    this.initPhysics();
     this.buildWall();
+    this.buildRacks();
     this.updateSign();
 
     // --- input ------------------------------------------------------------
-    // The trigger throws, unless the laser is resting on a sign — then it is a
-    // press, and the kit's own click handling deals with it.
+    // Squeeze near a dart to take it, let go to throw. A trigger aimed at a
+    // sign is still a press — the kit's own click handling deals with that.
     ['left', 'right'].forEach(function (hand) {
       var el = document.querySelector('#' + hand + '-hand');
       if (!el) return;
-      el.addEventListener('controllerconnected',    function () { self.connected[hand] = true; });
-      el.addEventListener('controllerdisconnected', function () { self.connected[hand] = false; });
-      el.addEventListener('triggerdown', function () { self.throwFromHand(hand); });
+      el.addEventListener('triggerdown', function () { self.grab(hand); });
+      el.addEventListener('triggerup',   function () { self.release(hand); });
+      el.addEventListener('gripdown',    function () { self.grab(hand); });
+      el.addEventListener('gripup',      function () { self.release(hand); });
     });
 
     // A-Frame only emits triggerdown for controller profiles it recognises, so
-    // listen to WebXR's own select as well. Both share the debounce below.
+    // listen to WebXR's own select/squeeze as well. grab() ignores a second
+    // grab on a hand that is already holding something, so the two can overlap.
     this.el.sceneEl.addEventListener('enter-vr', function () {
       setTimeout(function () {
         var scene = self.el.sceneEl;
         var s = scene.xrSession || (scene.renderer && scene.renderer.xr && scene.renderer.xr.getSession());
         if (!s || s.__bubblePopBound) return;
         s.__bubblePopBound = true;
-        s.addEventListener('selectstart', function (e) {
-          var h = e && e.inputSource && e.inputSource.handedness;
-          self.throwFromHand(h === 'left' ? 'left' : 'right');
-        });
+        var handOf = function (e) { return (e && e.inputSource && e.inputSource.handedness) === 'left' ? 'left' : 'right'; };
+        s.addEventListener('selectstart',  function (e) { self.grab(handOf(e)); });
+        s.addEventListener('selectend',    function (e) { self.release(handOf(e)); });
+        s.addEventListener('squeezestart', function (e) { self.grab(handOf(e)); });
+        s.addEventListener('squeezeend',   function (e) { self.release(handOf(e)); });
       }, 0);
     });
 
-    // Desktop: a left-click throws along the centre ring, unless the ring is on
-    // a sign. Clicks on the HTML panel are not throws.
+    // Desktop has no arms: holding the left button takes the nearest dart and
+    // holds it out in front, letting go throws it along the centre ring.
     this.onMouseDown = function (e) {
       var scene = self.el.sceneEl;
       if (e.button !== 0) return;
       if (scene.renderer && scene.renderer.xr && scene.renderer.xr.isPresenting) return;
       if (!scene.canvas || e.target !== scene.canvas) return;
       if (self.aimingAtSign(document.querySelector('#gaze'))) return;
-      self.throwFromHead();
+      self.grab('head');
+    };
+    this.onMouseUp = function (e) {
+      if (e.button !== 0) return;
+      self.release('head');
     };
     document.addEventListener('mousedown', this.onMouseDown);
+    document.addEventListener('mouseup', this.onMouseUp);
 
     var again = document.querySelector('#new-wall');
     if (again) again.addEventListener('click', function () { self.newGame(); });
   },
 
-  remove: function () { document.removeEventListener('mousedown', this.onMouseDown); },
+  remove: function () {
+    document.removeEventListener('mousedown', this.onMouseDown);
+    document.removeEventListener('mouseup', this.onMouseUp);
+  },
+
+  // --- physics ------------------------------------------------------------
+  initPhysics: function () {
+    var world = new CANNON.World({ gravity: new CANNON.Vec3(0, -this.GRAVITY, 0) });
+    world.allowSleep = true;                         // a dart lying still costs nothing
+    world.defaultContactMaterial.friction = 0.45;
+    world.defaultContactMaterial.restitution = 0.12; // darts land with a small knock, they don't bounce away
+    var floor = new CANNON.Body({ mass: 0, shape: new CANNON.Plane() });
+    floor.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
+    world.addBody(floor);
+    this.world = world;
+  },
+
+  // --- the racks of darts, one either side, within arm's reach -------------
+  buildRacks: function () {
+    var self = this, TOP = this.RACK_TOP;
+    [-1, 1].forEach(function (side) {
+      var cx = side * 0.55, cz = -0.5;      // an arm's length away, half in view when looking ahead
+
+      var rack = document.createElement('a-entity');
+      rack.classList.add('rack');
+      rack.setAttribute('position', cx + ' 0 ' + cz);
+
+      var top = document.createElement('a-box');
+      top.setAttribute('width', 0.5);
+      top.setAttribute('height', 0.06);
+      top.setAttribute('depth', 0.34);
+      top.setAttribute('color', '#c98f5a');
+      top.setAttribute('position', '0 ' + TOP + ' 0');
+
+      var leg = document.createElement('a-cylinder');
+      leg.setAttribute('radius', 0.055);
+      leg.setAttribute('height', TOP - 0.03);
+      leg.setAttribute('color', '#a8703f');
+      leg.setAttribute('position', '0 ' + ((TOP - 0.03) / 2) + ' 0');
+
+      var label = document.createElement('a-entity');
+      label.setAttribute('position', '0 ' + (TOP + 0.32) + ' 0.02');
+      label.setAttribute('canvas-sign', { width: 0.5, height: 0.14, bg: '#1d4a6e', title: 'Darts' });
+
+      rack.appendChild(top);
+      rack.appendChild(leg);
+      rack.appendChild(label);
+      self.el.appendChild(rack);
+
+      var body = new CANNON.Body({ mass: 0, shape: new CANNON.Box(new CANNON.Vec3(0.25, 0.03, 0.17)) });
+      body.position.set(cx, TOP, cz);
+      self.world.addBody(body);
+
+      // three to a rack, lying across it with their tips toward the wall
+      for (var i = 0; i < 3; i++) {
+        self.makeDart(cx + (i - 1) * 0.15, TOP + 0.03 + self.DART_HALF, cz);
+      }
+    });
+  },
+
+  makeDart: function (x, y, z) {
+    var THREE = AFRAME.THREE;
+
+    var el = document.createElement('a-entity');
+    el.classList.add('dart');
+    var shaft = document.createElement('a-cone');
+    shaft.setAttribute('radius-bottom', 0.03);
+    shaft.setAttribute('radius-top', 0.004);
+    shaft.setAttribute('height', 0.22);
+    shaft.setAttribute('segments-radial', 8);
+    shaft.setAttribute('segments-height', 1);
+    shaft.setAttribute('color', '#f5f7fa');
+    var tail = document.createElement('a-sphere');
+    tail.setAttribute('radius', 0.035);
+    tail.setAttribute('segments-width', 10);
+    tail.setAttribute('segments-height', 8);
+    tail.setAttribute('color', '#ff5d73');
+    tail.setAttribute('position', '0 -0.11 0');
+    el.appendChild(shaft);
+    el.appendChild(tail);
+    this.el.appendChild(el);
+
+    var q = new CANNON.Quaternion();
+    q.setFromEuler(-Math.PI / 2, 0, 0);               // lying down, tip toward the wall
+    var body = new CANNON.Body({
+      mass: 0.09,
+      shape: new CANNON.Box(new CANNON.Vec3(this.DART_HALF, this.DART_LONG, this.DART_HALF)),
+      position: new CANNON.Vec3(x, y, z),
+      quaternion: q,
+      linearDamping: 0.01,
+      angularDamping: 0.3
+    });
+    body.sleepSpeedLimit = 0.15;
+    body.sleepTimeLimit = 0.4;
+    this.world.addBody(body);
+
+    // Body and mesh are two separate things: the body is copied onto the mesh
+    // every frame, and the starting quaternion is kept so a dart that goes home
+    // lies down again instead of snapping upright.
+    var d = {
+      el: el, body: body, held: null, restT: 0, glow: false,
+      home: { x: x, y: y, z: z, q: q.clone() },
+      tip: new THREE.Vector3(), prevTip: new THREE.Vector3()
+    };
+    this.darts.push(d);
+    this.tipOf(d, d.tip);
+    d.prevTip.copy(d.tip);
+    this.syncDart(d);
+    return d;
+  },
+
+  syncDart: function (d) {
+    var p = d.body.position, q = d.body.quaternion;
+    d.el.object3D.position.set(p.x, p.y, p.z);
+    d.el.object3D.quaternion.set(q.x, q.y, q.z, q.w);
+  },
+
+  // the sharp end, which is what a bubble feels
+  tipOf: function (d, out) {
+    var q = d.body.quaternion, p = d.body.position;
+    out.set(0, this.DART_LONG, 0).applyQuaternion(this._q.set(q.x, q.y, q.z, q.w));
+    out.x += p.x; out.y += p.y; out.z += p.z;
+    return out;
+  },
+
+  freeDart: function () {
+    for (var i = 0; i < this.darts.length; i++) if (!this.darts[i].held) return this.darts[i];
+    return null;
+  },
+
+  nearestDart: function (point, reach) {
+    var best = null, bestD = reach * reach;
+    for (var i = 0; i < this.darts.length; i++) {
+      var d = this.darts[i];
+      if (d.held) continue;
+      var p = d.body.position;
+      var dx = p.x - point.x, dy = p.y - point.y, dz = p.z - point.z;
+      var dist = dx * dx + dy * dy + dz * dz;
+      if (dist < bestD) { best = d; bestD = dist; }
+    }
+    return best;
+  },
+
+  returnDart: function (d) {
+    var h = d.home;
+    d.body.type = CANNON.Body.DYNAMIC;
+    d.body.position.set(h.x, h.y, h.z);
+    d.body.quaternion.copy(h.q);
+    d.body.velocity.set(0, 0, 0);
+    d.body.angularVelocity.set(0, 0, 0);
+    d.body.force.set(0, 0, 0);
+    d.body.torque.set(0, 0, 0);
+    d.restT = 0;
+    d.body.wakeUp();
+    this.tipOf(d, d.tip);
+    d.prevTip.copy(d.tip);
+    this.syncDart(d);
+  },
+
+  // --- picking up and throwing --------------------------------------------
+  // The laser you see is the raycaster's ray, not the controller's -Z, so a
+  // dart leaves the hand along exactly the line the player is aiming with.
+  aimingAtSign: function (el) {
+    var rc = el && el.components && el.components.raycaster;
+    return !!(rc && rc.intersections && rc.intersections.length);
+  },
+
+  // In VR the real head pose lives on the camera object inside #head, never on
+  // the entity — xr-kit's headObject() returns whichever is right.
+  handObject: function (hand) {
+    if (hand === 'head') {
+      var kit = this.el.sceneEl.components['xr-kit'];
+      var cam = (kit && kit.headObject && kit.headObject()) || null;
+      if (cam) return cam;
+      var head = document.querySelector('#head');
+      return head && head.object3D;
+    }
+    var el = document.querySelector('#' + hand + '-hand');
+    return el && el.object3D;
+  },
+
+  aimDirection: function (hand, out) {
+    var el = hand === 'head' ? null : document.querySelector('#' + hand + '-hand');
+    var rc = el && el.components && el.components.raycaster && el.components.raycaster.raycaster;
+    if (rc) { out.copy(rc.ray.direction).normalize(); if (out.lengthSq() > 0.5) return out; }
+    var obj = this.handObject(hand);
+    if (!obj) return out.set(0, 0, -1);
+    obj.getWorldQuaternion(this._q);
+    return out.set(0, 0, -1).applyQuaternion(this._q).normalize();
+  },
+
+  grab: function (hand) {
+    if (this.held[hand]) return;
+    var obj = this.handObject(hand);
+    if (!obj) return;
+    if (hand !== 'head' && this.aimingAtSign(document.querySelector('#' + hand + '-hand'))) return;
+    obj.updateWorldMatrix(true, false);
+    obj.getWorldPosition(this._a);
+    // A hand has to reach; the desktop player has no arms, so a click takes
+    // whichever dart is nearest.
+    var d = this.nearestDart(this._a, hand === 'head' ? 99 : this.GRAB_REACH);
+    if (!d) return;
+    this.setGlow(d, false);
+    d.held = hand;
+    d.restT = 0;
+    d.body.type = CANNON.Body.KINEMATIC;             // it goes where the hand goes until it is let go
+    d.body.allowSleep = false;
+    d.body.wakeUp();
+    d.body.velocity.set(0, 0, 0);
+    d.body.angularVelocity.set(0, 0, 0);
+    this.held[hand] = d;
+    this.trails[hand].length = 0;
+    this.holdDart(d);
+  },
+
+  holdDart: function (d) {
+    var hand = d.held, obj = this.handObject(hand);
+    if (!obj) return;
+    obj.updateWorldMatrix(true, false);
+    obj.getWorldPosition(this._a);
+    this.aimDirection(hand, this._b);
+    if (hand === 'head') { this._a.addScaledVector(this._b, 0.5); this._a.y -= 0.16; }  // out where it can be seen, not over the eyes
+    else { this._a.addScaledVector(this._b, 0.08); }
+    d.body.position.set(this._a.x, this._a.y, this._a.z);
+    this._q.setFromUnitVectors(this._up, this._b);   // the cone's tip (+Y) leads
+    d.body.quaternion.set(this._q.x, this._q.y, this._q.z, this._q.w);
+    d.body.velocity.set(0, 0, 0);
+    d.body.angularVelocity.set(0, 0, 0);
+  },
+
+  // Where the hand has been, so a release can read the speed of the swing.
+  sampleHand: function (hand, time) {
+    var obj = this.handObject(hand);
+    if (!obj) return;
+    obj.updateWorldMatrix(true, false);
+    obj.getWorldPosition(this._a);
+    var trail = this.trails[hand];
+    trail.push({ t: time, x: this._a.x, y: this._a.y, z: this._a.z });
+    if (trail.length > this.TRAIL) trail.shift();
+  },
+
+  // The release peak, not the average: check every window of 20–120 ms ending
+  // at the last sample and keep the fastest. A flat average reads about
+  // two-thirds of the real speed and the throw feels dead.
+  trailVelocity: function (hand, out) {
+    var trail = this.trails[hand];
+    out.set(0, 0, 0);
+    if (trail.length < 2) return out;
+    var last = trail[trail.length - 1], best = 0;
+    for (var i = trail.length - 2; i >= 0; i--) {
+      var dt = (last.t - trail[i].t) / 1000;
+      if (dt < 0.02) continue;
+      if (dt > 0.12) break;
+      var vx = (last.x - trail[i].x) / dt, vy = (last.y - trail[i].y) / dt, vz = (last.z - trail[i].z) / dt;
+      var sp = Math.sqrt(vx * vx + vy * vy + vz * vz);
+      if (sp > best) { best = sp; out.set(vx, vy, vz); }
+    }
+    if (!best) {                                   // frames longer than the window (a hitch): use the last pair rather than drop the throw
+      var prev = trail[trail.length - 2], span = Math.min(0.25, Math.max(0.008, (last.t - prev.t) / 1000));
+      out.set((last.x - prev.x) / span, (last.y - prev.y) / span, (last.z - prev.z) / span);
+    }
+    out.multiplyScalar(this.THROW_GAIN);
+    if (out.length() > this.MAX_SPEED) out.setLength(this.MAX_SPEED);
+    return out;
+  },
+
+  // Desktop: the mouse can't swing, so the throw goes along the centre ring at
+  // a set speed, lifted by exactly what gravity will take out of it on the way
+  // to the wall — a click lands where the ring is pointing.
+  aimedVelocity: function (origin, dir, speed, out) {
+    var reach = Math.abs(this.data.z - origin.z) / Math.max(0.25, -dir.z);
+    reach = Math.max(1.5, Math.min(6, reach));
+    var tof = reach / speed;
+    out.copy(dir).multiplyScalar(speed);
+    out.y += 0.5 * this.GRAVITY * tof;
+    if (out.length() > this.MAX_SPEED) out.setLength(this.MAX_SPEED);
+    return out;
+  },
+
+  release: function (hand) {
+    var d = this.held[hand];
+    if (!d) return;
+    this.held[hand] = null;
+    d.held = null;
+    d.restT = 0;
+    d.body.type = CANNON.Body.DYNAMIC;
+    d.body.allowSleep = true;
+    d.body.wakeUp();
+
+    if (hand === 'head') {
+      var obj = this.handObject('head');
+      obj.updateWorldMatrix(true, false);
+      obj.getWorldPosition(this._a);
+      this.aimDirection('head', this._b);
+      this.aimedVelocity(this._a, this._b, 10.5, this._c);
+    } else {
+      this.trailVelocity(hand, this._c);
+    }
+
+    d.body.velocity.set(this._c.x, this._c.y, this._c.z);
+    var sp = this._c.length();
+    if (sp > 0.6) {
+      this._b.copy(this._c).normalize();
+      this._q.setFromUnitVectors(this._up, this._b);
+      d.body.quaternion.set(this._q.x, this._q.y, this._q.z, this._q.w);
+      d.body.angularVelocity.set(0, 0, 0);
+    }
+    if (sp > 1.5) { this.thrown++; this.updateSign(); }   // anything slower was a drop, not a throw
+    this.tipOf(d, d.tip);
+    d.prevTip.copy(d.tip);
+    this.syncDart(d);
+  },
+
+  // Used by the self-check: a dart thrown from where the player is standing,
+  // straight at a bubble, with the lift gravity will take back out of it.
+  throwAtBubble: function (index) {
+    var THREE = AFRAME.THREE;
+    var alive = this.bubbles.filter(function (b) { return b.alive; });
+    var b = alive[index || 0], d = this.freeDart();
+    if (!b || !d) return false;
+    var obj = this.handObject('head');
+    if (!obj) return false;
+    obj.updateWorldMatrix(true, false);
+    var origin = obj.getWorldPosition(new THREE.Vector3());
+    origin.y -= 0.12;
+    var target = new THREE.Vector3(b.x, b.y, b.z);
+    var reach = target.distanceTo(origin);
+    var speed = Math.min(this.MAX_SPEED, Math.max(8, reach * 4.2));
+    var tof = reach / speed;
+    var v = target.clone().sub(origin).divideScalar(tof);
+    v.y += 0.5 * this.GRAVITY * tof;
+
+    d.body.type = CANNON.Body.DYNAMIC;
+    d.body.allowSleep = true;
+    d.body.position.set(origin.x, origin.y, origin.z);
+    this._q.setFromUnitVectors(this._up, this._b.copy(v).normalize());
+    d.body.quaternion.set(this._q.x, this._q.y, this._q.z, this._q.w);
+    d.body.velocity.set(v.x, v.y, v.z);
+    d.body.angularVelocity.set(0, 0, 0);
+    d.body.wakeUp();
+    d.restT = 0;
+    this.tipOf(d, d.tip);
+    d.prevTip.copy(d.tip);
+    this.syncDart(d);
+    this.thrown++;
+    this.updateSign();
+    return true;
+  },
+
+  // A dart a hand could take right now lights up, so nobody has to guess.
+  setGlow: function (d, on) {
+    if (d.glow === on) return;
+    d.glow = on;
+    var kids = d.el.children;
+    for (var i = 0; i < kids.length; i++) {
+      kids[i].setAttribute('material', 'emissive', on ? '#ffd76a' : '#000000');
+      kids[i].setAttribute('material', 'emissiveIntensity', on ? 0.75 : 0);
+    }
+  },
 
   // --- the wall -----------------------------------------------------------
   buildWall: function () {
@@ -1564,6 +1990,11 @@ AFRAME.registerComponent('bubble-pop-game', {
     this.popped = 0;
     this.thrown = 0;
     this.buildWall();
+    for (var i = 0; i < this.darts.length; i++) {
+      var d = this.darts[i];
+      if (d.held) { this.held[d.held] = null; d.held = null; d.body.allowSleep = true; }
+      this.returnDart(d);
+    }
     this.updateSign();
   },
 
@@ -1581,110 +2012,11 @@ AFRAME.registerComponent('bubble-pop-game', {
     this.updateSign();
   },
 
-  // --- throwing -----------------------------------------------------------
-  // The laser you see is the raycaster's ray, not the controller's -Z, so the
-  // dart leaves along exactly the line the player is aiming with.
-  aimingAtSign: function (el) {
-    var rc = el && el.components && el.components.raycaster;
-    return !!(rc && rc.intersections && rc.intersections.length);
-  },
-
-  throwFromHand: function (hand) {
-    var now = (window.performance && performance.now()) ? performance.now() : Date.now();
-    if (now - (this.lastThrow[hand] || 0) < 150) return;     // triggerdown and WebXR select can both fire
-    this.lastThrow[hand] = now;
-    var el = document.querySelector('#' + hand + '-hand');
-    if (!el) return this.throwFromHead();
-    if (this.aimingAtSign(el)) return;                       // pointing at a sign: that is a press, not a throw
-    var rc = el.components && el.components.raycaster && el.components.raycaster.raycaster;
-    if (!this.connected[hand] || !rc) return this.throwFromHead();
-    this.throwRay(this._a.copy(rc.ray.origin), this._b.copy(rc.ray.direction));
-  },
-
-  // In VR the real head pose lives on the camera object inside #head, never on
-  // the entity — xr-kit's headObject() returns whichever is right.
-  throwFromHead: function () {
-    var THREE = AFRAME.THREE;
-    var kit = this.el.sceneEl.components['xr-kit'];
-    var cam = (kit && kit.headObject && kit.headObject()) || null;
-    if (!cam) {
-      var head = document.querySelector('#head');
-      cam = head && head.object3D;
-    }
-    if (!cam) return;
-    cam.updateWorldMatrix(true, false);
-    cam.getWorldPosition(this._a);
-    cam.getWorldQuaternion(this._q);
-    this._b.set(0, 0, -1).applyQuaternion(this._q);
-    this._a.addScaledVector(this._b, 0.25);                  // start just in front of the eyes
-    this.throwRay(this._a, this._b);
-  },
-
-  throwRay: function (origin, direction) {
-    var THREE = AFRAME.THREE;
-    var dir = new THREE.Vector3().copy(direction).normalize();
-    if (!isFinite(dir.x) || dir.lengthSq() < 0.5) return;
-    if (this.darts.length >= this.MAX_DARTS) this.removeDart(0);
-
-    var el = document.createElement('a-entity');
-    el.classList.add('dart');
-    var shaft = document.createElement('a-cone');
-    shaft.setAttribute('radius-bottom', 0.03);
-    shaft.setAttribute('radius-top', 0.004);
-    shaft.setAttribute('height', 0.22);
-    shaft.setAttribute('segments-radial', 8);
-    shaft.setAttribute('segments-height', 1);
-    shaft.setAttribute('color', '#f5f7fa');
-    var tail = document.createElement('a-sphere');
-    tail.setAttribute('radius', 0.035);
-    tail.setAttribute('segments-width', 10);
-    tail.setAttribute('segments-height', 8);
-    tail.setAttribute('color', '#ff5d73');
-    tail.setAttribute('position', '0 -0.11 0');
-    el.appendChild(shaft);
-    el.appendChild(tail);
-    this.el.appendChild(el);
-
-    var d = {
-      el: el, age: 0,
-      pos: new THREE.Vector3().copy(origin),
-      vel: new THREE.Vector3().copy(dir).multiplyScalar(this.SPEED)
-    };
-    el.object3D.position.copy(d.pos);
-    el.object3D.quaternion.setFromUnitVectors(this._up, dir);   // the cone's tip (+Y) leads the flight
-    this.darts.push(d);
-    this.thrown++;
-    this.updateSign();
-  },
-
-  removeDart: function (i) {
-    var d = this.darts[i];
-    if (!d) return;
-    if (d.el && d.el.parentNode) d.el.parentNode.removeChild(d.el);
-    this.darts.splice(i, 1);
-  },
-
-  // Used by the self-check: the same flight the trigger starts, aimed straight
-  // at a bubble that is standing there.
-  throwAtBubble: function (index) {
-    var THREE = AFRAME.THREE;
-    var alive = this.bubbles.filter(function (b) { return b.alive; });
-    var b = alive[index || 0];
-    if (!b) return false;
-    var kit = this.el.sceneEl.components['xr-kit'];
-    var cam = (kit && kit.headObject && kit.headObject()) || document.querySelector('#head').object3D;
-    cam.updateWorldMatrix(true, false);
-    var origin = cam.getWorldPosition(new THREE.Vector3());
-    var dir = new THREE.Vector3(b.x, b.y, b.z).sub(origin).normalize();
-    this.throwRay(origin, dir);
-    return true;
-  },
-
   // --- the flight ---------------------------------------------------------
-  // The dart is tested as the segment it swept this frame, so a fast dart can
+  // The tip is tested as the segment it swept this frame, so a fast dart can
   // never skip past a bubble between two frames.
   hitAlong: function (p0, p1) {
-    var seg = this._c.copy(p1).sub(p0);
+    var seg = this._d.copy(p1).sub(p0);
     var len2 = seg.lengthSq();
     var reach = this.RADIUS + this.TOLERANCE, best = null, bestT = 2;
     for (var i = 0; i < this.bubbles.length; i++) {
@@ -1702,7 +2034,7 @@ AFRAME.registerComponent('bubble-pop-game', {
   },
 
   tick: function (time, delta) {
-    var dt = Math.min(delta || 16, 50) / 1000, i, b;
+    var dt = Math.min(delta || 16, 50) / 1000, i, b, d;
 
     // bubbles bob where they float, and popped ones swell and fade away
     for (i = this.bubbles.length - 1; i >= 0; i--) {
@@ -1724,19 +2056,53 @@ AFRAME.registerComponent('bubble-pop-game', {
       }
     }
 
-    // darts
-    for (i = this.darts.length - 1; i >= 0; i--) {
-      var d = this.darts[i];
-      d.age += dt;
-      var prev = this._a.copy(d.pos);
-      d.vel.y -= this.GRAVITY * dt;
-      d.pos.addScaledVector(d.vel, dt);
-      var hit = this.hitAlong(prev, d.pos);
-      if (hit) { this.popBubble(hit); this.removeDart(i); continue; }
-      if (d.pos.y < 0.02 || d.age > 3 || d.pos.lengthSq() > 900) { this.removeDart(i); continue; }
-      d.el.object3D.position.copy(d.pos);
-      d.el.object3D.quaternion.setFromUnitVectors(this._up, this._b.copy(d.vel).normalize());
+    // remember where each hand has been, and carry whatever it is holding
+    ['left', 'right', 'head'].forEach(function (hand) {
+      this.sampleHand(hand, time);
+      if (this.held[hand]) this.holdDart(this.held[hand]);
+    }, this);
+
+    // 120 Hz: cannon-es has no continuous collision, so a coarser step lets a
+    // fast dart pass straight through the floor or a rack.
+    this.world.step(1 / 120, dt, 5);
+
+    for (i = 0; i < this.darts.length; i++) {
+      d = this.darts[i];
+      d.prevTip.copy(d.tip);
+      this.tipOf(d, d.tip);
+      this.syncDart(d);
+      if (d.held) continue;
+
+      var v = d.body.velocity, sp = Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+      if (sp > 1) {
+        var hit = this.hitAlong(d.prevTip, d.tip);
+        if (hit) this.popBubble(hit);
+      }
+
+      var p = d.body.position;
+      if (p.y < -1 || Math.abs(p.x) > 12 || Math.abs(p.z) > 12) { this.returnDart(d); continue; }
+
+      // a dart that has come to rest away from its rack finds its own way home
+      if (sp < 0.25 || d.body.sleepState === CANNON.Body.SLEEPING) d.restT += dt;
+      else d.restT = 0;
+      if (d.restT > this.REST_SECS) {
+        var h = d.home, dx = p.x - h.x, dy = p.y - h.y, dz = p.z - h.z;
+        if (dx * dx + dy * dy + dz * dz > 0.12) this.returnDart(d);
+        else d.restT = 0;
+      }
     }
+
+    // the dart each hand could pick up right now glows, so nobody has to guess
+    var wanted = [];
+    ['left', 'right'].forEach(function (hand) {
+      if (this.held[hand]) return;
+      var obj = this.handObject(hand);
+      if (!obj) return;
+      obj.getWorldPosition(this._a);
+      var near = this.nearestDart(this._a, this.GRAB_REACH);
+      if (near) wanted.push(near);
+    }, this);
+    for (i = 0; i < this.darts.length; i++) this.setGlow(this.darts[i], wanted.indexOf(this.darts[i]) >= 0);
 
     // a cleared wall fills again by itself, so nobody is ever left with nothing to pop
     if (this.aliveCount() === 0) {
@@ -1827,7 +2193,7 @@ AFRAME.registerComponent('bubble-pop-game', {
             canvas-sign="width: 1.8; height: 0.5; title: Popped 0; sub: 15 bubbles left"></a-entity>
 
   <a-entity id="howto" position="0 0.78 -2.9"
-            canvas-sign="width: 1.5; height: 0.24; bg: #1d4a6e; title: Trigger to throw a dart"></a-entity>
+            canvas-sign="width: 1.7; height: 0.24; bg: #1d4a6e; title: Grab a dart and throw it"></a-entity>
 
   <!-- Big, obvious, and always reachable, so a finished round is never a dead end. -->
   <a-entity id="new-wall" class="clickable" position="0 0.4 -2.9"
