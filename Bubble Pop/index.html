@@ -8,7 +8,7 @@
 <!-- Build number. Shown in the panel before you enter VR, so you can tell at a
      glance whether the headset is running your newest version. The publish
      step increments this automatically whenever the file has changed. -->
-<script>window.BUILD = 4;</script>
+<script>window.BUILD = 6;</script>
 
 <!-- Controls shown on the panel, in two lists. When you add an interaction to
      the scene (grab, throw, press), add a line to `headset` so players know. -->
@@ -87,6 +87,29 @@ window.KIT_CHECKS = [
         t.expect(speed > 1.5, 'the dart left the hand at ' + speed.toFixed(1) + ' m/s — a swing should throw it faster than that');
       });
   } },
+  { name: 'the bubbles drift about instead of hanging still', run: function (t) {
+      var game = bubblePop();
+      t.expect(game, 'the game is not running on #game');
+      var b = game.bubbles.filter(function (x) { return x.alive; })[0];
+      t.expect(b, 'there were no bubbles on the wall to watch');
+      // Read the next three seconds of drift straight off the motion rather
+      // than waiting them out, so the check stays well under a second.
+      var p = {}, far = 0, travelled = 0, last = null;
+      for (var ms = 0; ms <= 3000; ms += 50) {
+        game.bubbleAt(b, game.clock + ms / 1000, p);
+        far = Math.max(far, Math.hypot(p.x - b.base.x, p.y - b.base.y, p.z - b.base.z));
+        if (last) travelled += Math.hypot(p.x - last.x, p.y - last.y, p.z - last.z);
+        last = { x: p.x, y: p.y, z: p.z };
+      }
+      t.expect(far > 0.25, 'a bubble never strays further than ' + far.toFixed(2) + ' m from its place — the wall is barely moving');
+      t.expect(travelled > 1.2, 'a bubble covers only ' + travelled.toFixed(2) + ' m in three seconds — too slow to be worth aiming at');
+      return t.wait(200).then(function () {
+        game.bubbleAt(b, game.clock, p);
+        t.expect(Math.hypot(b.x - p.x, b.y - p.y, b.z - p.z) < 1e-6, 'the bubbles are not actually being carried along by the drift');
+        var o = b.el.object3D.position;
+        t.expect(Math.hypot(o.x - b.x, o.y - b.y, o.z - b.z) < 1e-6, 'a bubble is drawn somewhere other than where it floats');
+      });
+  } },
   { name: 'a thrown dart bursts the bubble it hits', run: function (t) {
       var game = bubblePop();
       t.expect(game, 'the game is not running on #game');
@@ -133,8 +156,14 @@ window.KIT_CHECKS = [
       t.expect(Math.abs(game.remaining - game.ROUND_SECS) < 0.01, 'a new round did not start with a full 30 seconds on the clock');
       t.expect(game.throwAtBubble(0), 'the dart was never thrown');
       t.expect(game.running, 'throwing the first dart did not start the clock');
+      // measured against the game's own clock, so a slow frame rate on the
+      // machine running the check can't read as a stopped clock
+      var was = game.remaining, at = game.clock;
       return t.wait(500).then(function () {
-        t.expect(game.remaining < game.ROUND_SECS - 0.2, 'the clock is not counting down (still says ' + game.remaining.toFixed(2) + ' s)');
+        var played = game.clock - at;
+        t.expect(played > 0, 'the game did not run a single frame in half a second');
+        t.expect(Math.abs((was - game.remaining) - played) < 0.02,
+                 'the clock is not counting down with the game — ' + played.toFixed(2) + ' s were played and it lost ' + (was - game.remaining).toFixed(2) + ' s');
       });
   } },
   { name: 'the clock hand sweeps a full turn as the round runs out', run: function (t) {
@@ -159,7 +188,13 @@ window.KIT_CHECKS = [
       game.newGame();
       t.expect(game.throwAtBubble(0), 'the dart was never thrown');
       game.remaining = 0.1;                                     // jump to the last moment of the round
-      return t.wait(400).then(function () {
+      // give it the tenth of a second of play the clock still has, counted on
+      // the game's own clock so a slow machine doesn't read as a stuck round
+      function untilOver(tries) {
+        if (game.over || tries <= 0) return Promise.resolve();
+        return t.wait(120).then(function () { return untilOver(tries - 1); });
+      }
+      return untilOver(10).then(function () {
         t.expect(game.over, 'the clock reached zero and the round did not end');
         t.expect(!game.running, 'the clock kept running after the round was over');
         var score = game.popped;
@@ -1690,6 +1725,7 @@ AFRAME.registerComponent('bubble-pop-game', {
 
     this.bubbles = [];
     this.darts   = [];
+    this.clock   = 0;              // seconds of game time, the drift and the physics share it
     this.popped  = 0;
     this.thrown  = 0;
     this.rebuildAt = 0;
@@ -2087,10 +2123,17 @@ AFRAME.registerComponent('bubble-pop-game', {
     obj.updateWorldMatrix(true, false);
     var origin = obj.getWorldPosition(new THREE.Vector3());
     origin.y -= 0.12;
+    // The bubbles drift, so aim at where this one will be when the dart gets
+    // there, not where it is now. Two passes settle it: leading the target
+    // barely changes how long the throw takes.
     var target = new THREE.Vector3(b.x, b.y, b.z);
-    var reach = target.distanceTo(origin);
-    var speed = Math.min(this.MAX_SPEED, Math.max(8, reach * 4.2));
-    var tof = reach / speed;
+    var reach = target.distanceTo(origin), speed, tof = 0;
+    for (var pass = 0; pass < 2; pass++) {
+      speed = Math.min(this.MAX_SPEED, Math.max(8, reach * 4.2));
+      tof = reach / speed;
+      this.bubbleAt(b, this.clock + tof, target);
+      reach = target.distanceTo(origin);
+    }
     var v = target.clone().sub(origin).divideScalar(tof);
     v.y += 0.5 * this.GRAVITY * tof;
 
@@ -2149,11 +2192,19 @@ AFRAME.registerComponent('bubble-pop-game', {
         el.setAttribute('position', x + ' ' + y + ' ' + d.z);
         el.classList.add('bubble');
         this.el.appendChild(el);
+        var n = r * d.cols + c;
         this.bubbles.push({
           el: el, alive: true, popT: 0,
           base: { x: x, y: y, z: d.z },
-          x: x, y: y, z: d.z,                      // where it is right now, kept up to date by the bob
-          phase: (r * d.cols + c) * 0.7
+          x: x, y: y, z: d.z,                      // where it is right now, kept up to date by the drift
+          // The swing crosses the wall as a wave: its phase steps along a row
+          // and down a column, so neighbours travel together and no bubble
+          // ever swims through the one beside it. The seed is this bubble's
+          // own quicker wobble, so the wall never looks like one rigid sheet.
+          px: r * 0.5 + c * 0.22,
+          py: c * 0.5 + r * 0.25,
+          pz: n * 0.6,
+          seed: n * 1.37
         });
       }
     }
@@ -2251,8 +2302,23 @@ AFRAME.registerComponent('bubble-pop-game', {
     return best;
   },
 
+  // Where a bubble is at a given moment of the game clock (seconds). A slow
+  // swing carries it about a third of a metre each way and a bob lifts it a
+  // fifth of a metre, each on its own timing, with a small quicker wobble of
+  // its own on top — a bubble crosses its own width in well under a second,
+  // so a dart has to be aimed where the bubble is going, not where it sits.
+  AX: 0.32, AY: 0.20, AZ: 0.13,  // how far it swings sideways, up and down, and to and fro
+  WX: 2.0, WY: 2.6, WZ: 1.5,     // radians per second: a swing every 3 s, a bob every 2.4 s
+  bubbleAt: function (b, t, out) {
+    out.x = b.base.x + this.AX * Math.sin(t * this.WX + b.px) + 0.05 * Math.sin(t * 3.7 + b.seed);
+    out.y = b.base.y + this.AY * Math.sin(t * this.WY + b.py) + 0.03 * Math.sin(t * 4.3 + b.seed * 2.3);
+    out.z = b.base.z + this.AZ * Math.sin(t * this.WZ + b.pz);
+    return out;
+  },
+
   tick: function (time, delta) {
     var dt = Math.min(delta || 16, 50) / 1000, i, b, d;
+    this.clock += dt;
 
     // the round clock
     if (this.running && !this.over) {
@@ -2261,12 +2327,11 @@ AFRAME.registerComponent('bubble-pop-game', {
       else this.updateClock();
     }
 
-    // bubbles bob where they float, and popped ones swell and fade away
+    // bubbles drift where they float, and popped ones swell and fade away
     for (i = this.bubbles.length - 1; i >= 0; i--) {
       b = this.bubbles[i];
       if (b.alive) {
-        b.x = b.base.x + Math.sin(time * 0.0011 + b.phase * 1.7) * 0.04;
-        b.y = b.base.y + Math.sin(time * 0.0016 + b.phase) * 0.06;
+        this.bubbleAt(b, this.clock, b);
         b.el.object3D.position.set(b.x, b.y, b.z);
       } else {
         b.popT += dt;
@@ -2288,8 +2353,10 @@ AFRAME.registerComponent('bubble-pop-game', {
     }, this);
 
     // 120 Hz: cannon-es has no continuous collision, so a coarser step lets a
-    // fast dart pass straight through the floor or a rack.
-    this.world.step(1 / 120, dt, 5);
+    // fast dart pass straight through the floor or a rack. Six sub-steps cover
+    // the 50 ms a slow frame can ask for, so the physics never falls behind
+    // the clock the bubbles drift on — a dart aimed at a bubble still meets it.
+    this.world.step(1 / 120, dt, 6);
 
     for (i = 0; i < this.darts.length; i++) {
       d = this.darts[i];
