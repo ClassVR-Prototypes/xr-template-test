@@ -1690,6 +1690,7 @@ AFRAME.registerComponent('bubble-pop-game', {
 
     this.bubbles = [];
     this.darts   = [];
+    this.clock   = 0;              // seconds of game time, the drift and the physics share it
     this.popped  = 0;
     this.thrown  = 0;
     this.rebuildAt = 0;
@@ -2149,11 +2150,19 @@ AFRAME.registerComponent('bubble-pop-game', {
         el.setAttribute('position', x + ' ' + y + ' ' + d.z);
         el.classList.add('bubble');
         this.el.appendChild(el);
+        var n = r * d.cols + c;
         this.bubbles.push({
           el: el, alive: true, popT: 0,
           base: { x: x, y: y, z: d.z },
-          x: x, y: y, z: d.z,                      // where it is right now, kept up to date by the bob
-          phase: (r * d.cols + c) * 0.7
+          x: x, y: y, z: d.z,                      // where it is right now, kept up to date by the drift
+          // The swing crosses the wall as a wave: its phase steps along a row
+          // and down a column, so neighbours travel together and no bubble
+          // ever swims through the one beside it. The seed is this bubble's
+          // own quicker wobble, so the wall never looks like one rigid sheet.
+          px: r * 0.5 + c * 0.22,
+          py: c * 0.5 + r * 0.25,
+          pz: n * 0.6,
+          seed: n * 1.37
         });
       }
     }
@@ -2251,8 +2260,23 @@ AFRAME.registerComponent('bubble-pop-game', {
     return best;
   },
 
+  // Where a bubble is at a given moment of the game clock (seconds). A slow
+  // swing carries it about a third of a metre each way and a bob lifts it a
+  // fifth of a metre, each on its own timing, with a small quicker wobble of
+  // its own on top — a bubble crosses its own width in well under a second,
+  // so a dart has to be aimed where the bubble is going, not where it sits.
+  AX: 0.32, AY: 0.20, AZ: 0.13,  // how far it swings sideways, up and down, and to and fro
+  WX: 2.0, WY: 2.6, WZ: 1.5,     // radians per second: a swing every 3 s, a bob every 2.4 s
+  bubbleAt: function (b, t, out) {
+    out.x = b.base.x + this.AX * Math.sin(t * this.WX + b.px) + 0.05 * Math.sin(t * 3.7 + b.seed);
+    out.y = b.base.y + this.AY * Math.sin(t * this.WY + b.py) + 0.03 * Math.sin(t * 4.3 + b.seed * 2.3);
+    out.z = b.base.z + this.AZ * Math.sin(t * this.WZ + b.pz);
+    return out;
+  },
+
   tick: function (time, delta) {
     var dt = Math.min(delta || 16, 50) / 1000, i, b, d;
+    this.clock += dt;
 
     // the round clock
     if (this.running && !this.over) {
@@ -2261,12 +2285,11 @@ AFRAME.registerComponent('bubble-pop-game', {
       else this.updateClock();
     }
 
-    // bubbles bob where they float, and popped ones swell and fade away
+    // bubbles drift where they float, and popped ones swell and fade away
     for (i = this.bubbles.length - 1; i >= 0; i--) {
       b = this.bubbles[i];
       if (b.alive) {
-        b.x = b.base.x + Math.sin(time * 0.0011 + b.phase * 1.7) * 0.04;
-        b.y = b.base.y + Math.sin(time * 0.0016 + b.phase) * 0.06;
+        this.bubbleAt(b, this.clock, b);
         b.el.object3D.position.set(b.x, b.y, b.z);
       } else {
         b.popT += dt;
