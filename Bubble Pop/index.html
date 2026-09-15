@@ -8,7 +8,7 @@
 <!-- Build number. Shown in the panel before you enter VR, so you can tell at a
      glance whether the headset is running your newest version. The publish
      step increments this automatically whenever the file has changed. -->
-<script>window.BUILD = 2;</script>
+<script>window.BUILD = 3;</script>
 
 <!-- Controls shown on the panel, in two lists. When you add an interaction to
      the scene (grab, throw, press), add a line to `headset` so players know. -->
@@ -20,7 +20,7 @@ window.KIT_CONTROLS = {
     'Trigger or grip: pick up the dart your hand is on',
     'Let go while swinging your arm: the dart flies the way you threw it',
     'Darts you drop find their own way back to the rack',
-    'Point at the "Start again" sign and squeeze the trigger for a fresh wall',
+    'Point at the "Start again" sign and squeeze the trigger for a fresh minute',
     'Left thumbstick: move',
     'Right thumbstick left / right: turn 45°',
     'Something wrong? Squeeze both triggers and hold for two seconds — a ring fills, then the moment is marked for Claude'
@@ -124,13 +124,46 @@ window.KIT_CHECKS = [
         t.expect(game.aliveCount() > 0, 'the wall never filled up again after it was cleared');
       });
   } },
-  { name: 'the "Start again" sign gives you a full wall', run: function (t) {
+  { name: 'the clock starts when you throw your first dart', run: function (t) {
       var game = bubblePop();
+      t.expect(game, 'the game is not running on #game');
+      t.expect(t.find('#timer'), 'there is no clock in the scene to read');
+      game.newGame();
+      t.expect(!game.running, 'the clock was already running before anything had been thrown');
+      t.expect(Math.abs(game.remaining - game.ROUND_SECS) < 0.01, 'a new round did not start with a full minute on the clock');
+      t.expect(game.throwAtBubble(0), 'the dart was never thrown');
+      t.expect(game.running, 'throwing the first dart did not start the clock');
+      return t.wait(500).then(function () {
+        t.expect(game.remaining < game.ROUND_SECS - 0.2, 'the clock is not counting down (still says ' + game.remaining.toFixed(2) + ' s)');
+      });
+  } },
+  { name: 'the round ends when the clock runs out', run: function (t) {
+      var game = bubblePop();
+      game.newGame();
+      t.expect(game.throwAtBubble(0), 'the dart was never thrown');
+      game.remaining = 0.1;                                     // jump to the last moment of the round
+      return t.wait(400).then(function () {
+        t.expect(game.over, 'the clock reached zero and the round did not end');
+        t.expect(!game.running, 'the clock kept running after the round was over');
+        var score = game.popped;
+        t.expect(game.throwAtBubble(0), 'the dart was never thrown');
+        return t.wait(900).then(function () {
+          t.expect(game.popped === score, 'a dart thrown after time was up still scored');
+        });
+      });
+  } },
+  { name: 'the "Start again" sign gives you a full wall and a fresh minute', run: function (t) {
+      var game = bubblePop();
+      game.newGame();
       game.popBubble(game.bubbles.filter(function (b) { return b.alive; })[0]);
+      game.remaining = 12;                                      // as if most of the round had gone
+      game.running = true;
       t.click('#new-wall');
       return t.wait(100).then(function () {
         t.expect(game.aliveCount() === game.data.cols * game.data.rows, 'the sign did not put a full wall back');
         t.expect(game.popped === 0, 'the score did not go back to zero');
+        t.expect(!game.over, 'the round is still marked as over');
+        t.expect(!game.running && Math.abs(game.remaining - game.ROUND_SECS) < 0.01, 'the sign did not put a fresh minute on the clock');
       });
   } }
 ];
@@ -1510,6 +1543,7 @@ AFRAME.registerComponent('bubble-pop-game', {
     this.RADIUS    = 0.19;
     this.TOLERANCE = 0.05;         // a little forgiveness on top of the bubble's radius
     this.REBUILD_MS = 1200;
+    this.ROUND_SECS = 60;          // one minute a round: long enough to find your aim, short enough to want another go
 
     this.GRAVITY    = 6.5;         // m/s² — a shade lighter than earth, so a thrown dart still flies roughly where it was aimed
     this.DART_HALF  = 0.032;       // half the dart's width; its half-length is below
@@ -1526,6 +1560,10 @@ AFRAME.registerComponent('bubble-pop-game', {
     this.popped  = 0;
     this.thrown  = 0;
     this.rebuildAt = 0;
+    this.remaining = this.ROUND_SECS;
+    this.running   = false;        // the clock waits for the first throw, so nobody loses time reading the signs
+    this.over      = false;
+    this.shownSecs = -1;
     this.held    = { left: null, right: null, head: null };
     this.trails  = { left: [], right: [], head: [] };
 
@@ -1539,6 +1577,7 @@ AFRAME.registerComponent('bubble-pop-game', {
     this.buildWall();
     this.buildRacks();
     this.updateSign();
+    this.updateClock();
 
     // --- input ------------------------------------------------------------
     // Squeeze near a dart to take it, let go to throw. A trigger aimed at a
@@ -1897,7 +1936,7 @@ AFRAME.registerComponent('bubble-pop-game', {
       d.body.quaternion.set(this._q.x, this._q.y, this._q.z, this._q.w);
       d.body.angularVelocity.set(0, 0, 0);
     }
-    if (sp > 1.5) { this.thrown++; this.updateSign(); }   // anything slower was a drop, not a throw
+    if (sp > 1.5) { this.thrown++; this.startClock(); this.updateSign(); }   // anything slower was a drop, not a throw
     this.tipOf(d, d.tip);
     d.prevTip.copy(d.tip);
     this.syncDart(d);
@@ -1935,6 +1974,7 @@ AFRAME.registerComponent('bubble-pop-game', {
     d.prevTip.copy(d.tip);
     this.syncDart(d);
     this.thrown++;
+    this.startClock();
     this.updateSign();
     return true;
   },
@@ -1986,9 +2026,53 @@ AFRAME.registerComponent('bubble-pop-game', {
     }
   },
 
+  // The clock starts on the first throw and stops when the round is over, so
+  // a round is a minute of throwing rather than a minute of standing about.
+  startClock: function () {
+    if (this.over || this.running) return;
+    this.running = true;
+    this.updateClock();
+  },
+
+  endRound: function () {
+    this.running = false;
+    this.over = true;
+    this.remaining = 0;
+    this.updateClock();
+    this.updateSign();
+  },
+
+  clockText: function () {
+    var secs = Math.max(0, Math.ceil(this.remaining));
+    return Math.floor(secs / 60) + ':' + ('0' + (secs % 60)).slice(-2);
+  },
+
+  // Redrawn only when the second on the face changes: a canvas texture upload
+  // every frame is a waste of a mobile GPU.
+  updateClock: function () {
+    var el = document.querySelector('#timer');
+    if (!el) return;
+    var secs = Math.max(0, Math.ceil(this.remaining));
+    if (secs === this.shownSecs && !this.over) return;
+    this.shownSecs = secs;
+    if (this.over) {
+      el.setAttribute('canvas-sign', { title: 'Time!', sub: 'round over', bg: '#7a2740' });
+      return;
+    }
+    el.setAttribute('canvas-sign', {
+      title: this.clockText(),
+      sub: this.running ? 'left' : 'throw to start',
+      bg: secs <= 10 ? '#7a2740' : '#15324d'          // the last ten seconds turn red
+    });
+  },
+
   newGame: function () {
     this.popped = 0;
     this.thrown = 0;
+    this.remaining = this.ROUND_SECS;
+    this.running = false;
+    this.over = false;
+    this.shownSecs = -1;
     this.buildWall();
     for (var i = 0; i < this.darts.length; i++) {
       var d = this.darts[i];
@@ -1996,6 +2080,7 @@ AFRAME.registerComponent('bubble-pop-game', {
       this.returnDart(d);
     }
     this.updateSign();
+    this.updateClock();
   },
 
   aliveCount: function () {
@@ -2005,7 +2090,7 @@ AFRAME.registerComponent('bubble-pop-game', {
   },
 
   popBubble: function (b) {
-    if (!b || !b.alive) return;
+    if (!b || !b.alive || this.over) return;
     b.alive = false;
     b.popT = 0;
     this.popped++;
@@ -2035,6 +2120,13 @@ AFRAME.registerComponent('bubble-pop-game', {
 
   tick: function (time, delta) {
     var dt = Math.min(delta || 16, 50) / 1000, i, b, d;
+
+    // the round clock
+    if (this.running && !this.over) {
+      this.remaining -= dt;
+      if (this.remaining <= 0) this.endRound();
+      else this.updateClock();
+    }
 
     // bubbles bob where they float, and popped ones swell and fade away
     for (i = this.bubbles.length - 1; i >= 0; i--) {
@@ -2116,6 +2208,13 @@ AFRAME.registerComponent('bubble-pop-game', {
     var el = document.querySelector('#score');
     if (!el) return;
     var left = this.aliveCount();
+    if (this.over) {
+      el.setAttribute('canvas-sign', {
+        title: 'Time! Popped ' + this.popped,
+        sub: 'press "Start again" for another minute'
+      });
+      return;
+    }
     if (left === 0 && this.rebuildAt) {
       el.setAttribute('canvas-sign', { title: 'Wall cleared!', sub: 'a new wall in a moment…' });
       return;
@@ -2189,8 +2288,12 @@ AFRAME.registerComponent('bubble-pop-game', {
 
   <!-- Score and instructions have to be objects in the scene: the HTML panel
        above is invisible once the headset is on. -->
-  <a-entity id="score" position="0 2.72 -3.05"
+  <a-entity id="score" position="-0.55 2.72 -3.05"
             canvas-sign="width: 1.8; height: 0.5; title: Popped 0; sub: 15 bubbles left"></a-entity>
+
+  <!-- The round clock, beside the score and readable from where the player stands. -->
+  <a-entity id="timer" position="0.95 2.72 -3.05"
+            canvas-sign="width: 0.9; height: 0.5; title: 1:00; sub: throw to start"></a-entity>
 
   <a-entity id="howto" position="0 0.78 -2.9"
             canvas-sign="width: 1.7; height: 0.24; bg: #1d4a6e; title: Grab a dart and throw it"></a-entity>
