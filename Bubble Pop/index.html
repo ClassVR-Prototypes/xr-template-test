@@ -20,7 +20,7 @@ window.KIT_CONTROLS = {
     'Trigger or grip: pick up the dart your hand is on',
     'Let go while swinging your arm: the dart flies the way you threw it',
     'Darts you drop find their own way back to the rack',
-    'Point at the "Start again" sign and squeeze the trigger for a fresh minute',
+    'Point at the "Start again" sign and squeeze the trigger for a fresh 30 seconds',
     'Left thumbstick: move',
     'Right thumbstick left / right: turn 45°',
     'Something wrong? Squeeze both triggers and hold for two seconds — a ring fills, then the moment is marked for Claude'
@@ -130,7 +130,7 @@ window.KIT_CHECKS = [
       t.expect(t.find('#timer'), 'there is no clock in the scene to read');
       game.newGame();
       t.expect(!game.running, 'the clock was already running before anything had been thrown');
-      t.expect(Math.abs(game.remaining - game.ROUND_SECS) < 0.01, 'a new round did not start with a full minute on the clock');
+      t.expect(Math.abs(game.remaining - game.ROUND_SECS) < 0.01, 'a new round did not start with a full 30 seconds on the clock');
       t.expect(game.throwAtBubble(0), 'the dart was never thrown');
       t.expect(game.running, 'throwing the first dart did not start the clock');
       return t.wait(500).then(function () {
@@ -152,7 +152,7 @@ window.KIT_CHECKS = [
         });
       });
   } },
-  { name: 'the "Start again" sign gives you a full wall and a fresh minute', run: function (t) {
+  { name: 'the "Start again" sign gives you a full wall and a fresh 30 seconds', run: function (t) {
       var game = bubblePop();
       game.newGame();
       game.popBubble(game.bubbles.filter(function (b) { return b.alive; })[0]);
@@ -163,7 +163,7 @@ window.KIT_CHECKS = [
         t.expect(game.aliveCount() === game.data.cols * game.data.rows, 'the sign did not put a full wall back');
         t.expect(game.popped === 0, 'the score did not go back to zero');
         t.expect(!game.over, 'the round is still marked as over');
-        t.expect(!game.running && Math.abs(game.remaining - game.ROUND_SECS) < 0.01, 'the sign did not put a fresh minute on the clock');
+        t.expect(!game.running && Math.abs(game.remaining - game.ROUND_SECS) < 0.01, 'the sign did not put a fresh 30 seconds on the clock');
       });
   } }
 ];
@@ -1543,7 +1543,7 @@ AFRAME.registerComponent('bubble-pop-game', {
     this.RADIUS    = 0.19;
     this.TOLERANCE = 0.05;         // a little forgiveness on top of the bubble's radius
     this.REBUILD_MS = 1200;
-    this.ROUND_SECS = 60;          // one minute a round: long enough to find your aim, short enough to want another go
+    this.ROUND_SECS = 30;          // half a minute a round: long enough to find your aim, short enough to want another go
 
     this.GRAVITY    = 6.5;         // m/s² — a shade lighter than earth, so a thrown dart still flies roughly where it was aimed
     this.DART_HALF  = 0.032;       // half the dart's width; its half-length is below
@@ -2027,7 +2027,7 @@ AFRAME.registerComponent('bubble-pop-game', {
   },
 
   // The clock starts on the first throw and stops when the round is over, so
-  // a round is a minute of throwing rather than a minute of standing about.
+  // a round is 30 seconds of throwing rather than 30 seconds of standing about.
   startClock: function () {
     if (this.over || this.running) return;
     this.running = true;
@@ -2211,7 +2211,7 @@ AFRAME.registerComponent('bubble-pop-game', {
     if (this.over) {
       el.setAttribute('canvas-sign', {
         title: 'Time! Popped ' + this.popped,
-        sub: 'press "Start again" for another minute'
+        sub: 'press "Start again" for another 30 seconds'
       });
       return;
     }
@@ -2293,7 +2293,7 @@ AFRAME.registerComponent('bubble-pop-game', {
 
   <!-- The round clock, beside the score and readable from where the player stands. -->
   <a-entity id="timer" position="0.95 2.72 -3.05"
-            canvas-sign="width: 0.9; height: 0.5; title: 1:00; sub: throw to start"></a-entity>
+            canvas-sign="width: 0.9; height: 0.5; title: 0:30; sub: throw to start"></a-entity>
 
   <a-entity id="howto" position="0 0.78 -2.9"
             canvas-sign="width: 1.7; height: 0.24; bg: #1d4a6e; title: Grab a dart and throw it"></a-entity>
