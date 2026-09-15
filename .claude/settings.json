@@ -1,0 +1,13 @@
+{
+  "extraKnownMarketplaces": {
+    "classvr-prototypes": {
+      "source": {
+        "source": "directory",
+        "path": "./kit"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "classvr-prototyping-kit@classvr-prototypes": true
+  }
+}
