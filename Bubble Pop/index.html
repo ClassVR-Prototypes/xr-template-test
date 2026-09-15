@@ -2088,10 +2088,17 @@ AFRAME.registerComponent('bubble-pop-game', {
     obj.updateWorldMatrix(true, false);
     var origin = obj.getWorldPosition(new THREE.Vector3());
     origin.y -= 0.12;
+    // The bubbles drift, so aim at where this one will be when the dart gets
+    // there, not where it is now. Two passes settle it: leading the target
+    // barely changes how long the throw takes.
     var target = new THREE.Vector3(b.x, b.y, b.z);
-    var reach = target.distanceTo(origin);
-    var speed = Math.min(this.MAX_SPEED, Math.max(8, reach * 4.2));
-    var tof = reach / speed;
+    var reach = target.distanceTo(origin), speed, tof = 0;
+    for (var pass = 0; pass < 2; pass++) {
+      speed = Math.min(this.MAX_SPEED, Math.max(8, reach * 4.2));
+      tof = reach / speed;
+      this.bubbleAt(b, this.clock + tof, target);
+      reach = target.distanceTo(origin);
+    }
     var v = target.clone().sub(origin).divideScalar(tof);
     v.y += 0.5 * this.GRAVITY * tof;
 
@@ -2311,8 +2318,10 @@ AFRAME.registerComponent('bubble-pop-game', {
     }, this);
 
     // 120 Hz: cannon-es has no continuous collision, so a coarser step lets a
-    // fast dart pass straight through the floor or a rack.
-    this.world.step(1 / 120, dt, 5);
+    // fast dart pass straight through the floor or a rack. Six sub-steps cover
+    // the 50 ms a slow frame can ask for, so the physics never falls behind
+    // the clock the bubbles drift on — a dart aimed at a bubble still meets it.
+    this.world.step(1 / 120, dt, 6);
 
     for (i = 0; i < this.darts.length; i++) {
       d = this.darts[i];
