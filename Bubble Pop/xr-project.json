@@ -1,0 +1,34 @@
+{
+  "kit": "classvr-prototyping-kit",
+  "name": "Bubble Pop",
+  "slug": "bubble-pop",
+  "concept": "Throw darts at a wall of floating bubbles to burst them; the wall rebuilds when cleared.",
+  "dof": 6,
+  "created": "2026-09-15T09:08:00Z",
+  "build": 1,
+  "sourceHash": "ba248a281f268a3709428325a486b5167be57022cc6fe8f108b6d294bd9d941b",
+  "libraries": [
+    "aframe"
+  ],
+  "classcloud": {
+    "organizationId": null,
+    "playlistId": null,
+    "playlistName": "XR Prototypes",
+    "activityId": null,
+    "lastPublished": null,
+    "lastUrl": null,
+    "qrPayload": null
+  },
+  "artifact": {
+    "url": null,
+    "owner": null,
+    "build": null,
+    "lastShared": null
+  },
+  "pages": {
+    "url": null,
+    "repo": null,
+    "build": null,
+    "lastShared": null
+  }
+}
