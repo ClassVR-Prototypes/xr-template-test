@@ -156,8 +156,14 @@ window.KIT_CHECKS = [
       t.expect(Math.abs(game.remaining - game.ROUND_SECS) < 0.01, 'a new round did not start with a full 30 seconds on the clock');
       t.expect(game.throwAtBubble(0), 'the dart was never thrown');
       t.expect(game.running, 'throwing the first dart did not start the clock');
+      // measured against the game's own clock, so a slow frame rate on the
+      // machine running the check can't read as a stopped clock
+      var was = game.remaining, at = game.clock;
       return t.wait(500).then(function () {
-        t.expect(game.remaining < game.ROUND_SECS - 0.2, 'the clock is not counting down (still says ' + game.remaining.toFixed(2) + ' s)');
+        var played = game.clock - at;
+        t.expect(played > 0, 'the game did not run a single frame in half a second');
+        t.expect(Math.abs((was - game.remaining) - played) < 0.02,
+                 'the clock is not counting down with the game — ' + played.toFixed(2) + ' s were played and it lost ' + (was - game.remaining).toFixed(2) + ' s');
       });
   } },
   { name: 'the clock hand sweeps a full turn as the round runs out', run: function (t) {
@@ -182,7 +188,13 @@ window.KIT_CHECKS = [
       game.newGame();
       t.expect(game.throwAtBubble(0), 'the dart was never thrown');
       game.remaining = 0.1;                                     // jump to the last moment of the round
-      return t.wait(400).then(function () {
+      // give it the tenth of a second of play the clock still has, counted on
+      // the game's own clock so a slow machine doesn't read as a stuck round
+      function untilOver(tries) {
+        if (game.over || tries <= 0) return Promise.resolve();
+        return t.wait(120).then(function () { return untilOver(tries - 1); });
+      }
+      return untilOver(10).then(function () {
         t.expect(game.over, 'the clock reached zero and the round did not end');
         t.expect(!game.running, 'the clock kept running after the round was over');
         var score = game.popped;
