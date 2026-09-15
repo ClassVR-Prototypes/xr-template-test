@@ -8,7 +8,7 @@
 <!-- Build number. Shown in the panel before you enter VR, so you can tell at a
      glance whether the headset is running your newest version. The publish
      step increments this automatically whenever the file has changed. -->
-<script>window.BUILD = 3;</script>
+<script>window.BUILD = 4;</script>
 
 <!-- Controls shown on the panel, in two lists. When you add an interaction to
      the scene (grab, throw, press), add a line to `headset` so players know. -->
@@ -135,6 +135,23 @@ window.KIT_CHECKS = [
       t.expect(game.running, 'throwing the first dart did not start the clock');
       return t.wait(500).then(function () {
         t.expect(game.remaining < game.ROUND_SECS - 0.2, 'the clock is not counting down (still says ' + game.remaining.toFixed(2) + ' s)');
+      });
+  } },
+  { name: 'the clock hand sweeps a full turn as the round runs out', run: function (t) {
+      var game = bubblePop();
+      var el = t.find('#timer');
+      t.expect(el, 'there is no clock in the scene to read');
+      var dial = el.components && el.components['clock-dial'];
+      t.expect(dial, 'the clock has no hand to read the time left from');
+      game.newGame();
+      return t.wait(60).then(function () {
+        t.expect(Math.abs(dial.hand.rotation.z) < 0.01, 'a fresh round did not start with the hand pointing at the top');
+        game.remaining = game.ROUND_SECS * 0.25;              // three quarters of the way through
+        game.updateClock();
+        t.expect(Math.abs(dial.hand.rotation.z + Math.PI * 1.5) < 0.05,
+                 'three quarters through the round the hand is not three quarters of the way round, clockwise');
+        game.endRound();
+        t.expect(Math.abs(dial.hand.rotation.z + Math.PI * 2) < 0.05, 'the hand did not finish a whole turn back at the top');
       });
   } },
   { name: 'the round ends when the clock runs out', run: function (t) {
@@ -1521,6 +1538,122 @@ AFRAME.registerComponent('canvas-sign', {
   }
 });
 
+// The round clock, as a clock: one hand starts at the top and sweeps a full
+// turn clockwise as the round runs out, so the time left is a shape to glance
+// at rather than a number to read. The face is a canvas painted once; the hand
+// and the wedge of turn still to come are plain geometry, so a running clock
+// costs the headset's GPU no texture uploads at all.
+AFRAME.registerComponent('clock-dial', {
+  schema: {
+    radius:   { default: 0.3 },
+    progress: { default: 0 },          // 0 = a whole round left, 1 = time up
+    face:     { default: '#0d2438' },
+    rim:      { default: '#a9cfee' },
+    fill:     { default: '#3a7fbf' },
+    hand:     { default: '#ffffff' },
+    urgent:   { default: false }       // the last ten seconds, when the dial turns red
+  },
+
+  init: function () {
+    var THREE = AFRAME.THREE, R = this.data.radius;
+    this.WEDGE_R = R * 0.68;            // the wedge stops short of the ticks
+    this.STEP    = Math.PI / 60;        // the hand moves every frame, the wedge every 3°
+
+    var root = new THREE.Group();
+    this.el.setObject3D('mesh', root);
+
+    // the face: disc, rim and twelve ticks, painted once
+    var px = 700;                       // pixels per metre: about twice what the face covers at 3 m
+    var size = Math.min(1024, Math.round(R * 2 * px));
+    var c = document.createElement('canvas');
+    c.width = c.height = size;
+    this.canvas = c;
+    this.ctx = c.getContext('2d');
+    var tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 4;
+    this.texture = tex;
+    root.add(new THREE.Mesh(
+      new THREE.PlaneGeometry(R * 2, R * 2),
+      new THREE.MeshBasicMaterial({ map: tex, transparent: true })   // unlit, like the signs
+    ));
+
+    // the part of the turn still to come
+    this.wedgeMat = new THREE.MeshBasicMaterial({ color: this.data.fill });
+    this.wedge = new THREE.Mesh(this.sector(0), this.wedgeMat);
+    this.wedge.position.z = 0.002;
+    root.add(this.wedge);
+
+    // the hand: a blade pivoting on the middle of the face, with a short tail
+    var len = R * 0.74, tail = R * 0.12, blade = new THREE.PlaneGeometry(R * 0.2, len + tail);
+    blade.translate(0, (len - tail) / 2, 0);
+    this.handMat = new THREE.MeshBasicMaterial({ color: this.data.hand });
+    this.hand = new THREE.Mesh(blade, this.handMat);
+    this.hand.position.z = 0.004;
+    root.add(this.hand);
+
+    var hub = new THREE.Mesh(new THREE.CircleGeometry(R * 0.09, 20), this.handMat);
+    hub.position.z = 0.006;
+    root.add(hub);
+
+    this.swept = -1;
+    this.setProgress(this.data.progress, this.data.urgent);
+  },
+
+  update: function () { if (this.hand) this.setProgress(this.data.progress, this.data.urgent); },
+
+  // The sector the hand has still to travel: from where it points, clockwise
+  // round to the top. Three.js measures anticlockwise from +X, so the sweep is
+  // built from the top of the previous turn forwards.
+  sector: function (p) {
+    var span = Math.max(0, Math.min(1, 1 - p)) * Math.PI * 2;
+    var segs = Math.max(3, Math.ceil(span / (Math.PI / 24)));
+    return new AFRAME.THREE.CircleGeometry(this.WEDGE_R, segs, Math.PI / 2 - Math.PI * 2, span);
+  },
+
+  // Called every frame while the round runs: the hand turns smoothly, the
+  // wedge is rebuilt only once it has actually changed shape.
+  setProgress: function (p, urgent) {
+    p = Math.max(0, Math.min(1, p || 0));
+    this.hand.rotation.z = -p * Math.PI * 2;                 // negative about Z is clockwise, seen from the front
+    if (this.swept < 0 || p === 0 || p === 1 ||
+        Math.abs(p - this.swept) * Math.PI * 2 >= this.STEP) {
+      this.wedge.geometry.dispose();
+      this.wedge.geometry = this.sector(p);
+      this.swept = p;
+    }
+    urgent = !!urgent;
+    if (urgent !== this.urgent) {
+      this.urgent = urgent;
+      this.wedgeMat.color.set(urgent ? '#b34062' : this.data.fill);
+      this.handMat.color.set(urgent ? '#ffe4ea' : this.data.hand);
+      this.drawFace(urgent);
+    }
+  },
+
+  drawFace: function (urgent) {
+    var g = this.ctx, s = this.canvas.width, m = s / 2, R = m * 0.98;
+    var ink = urgent ? '#ffb3c2' : this.data.rim;
+    g.clearRect(0, 0, s, s);
+    g.beginPath(); g.arc(m, m, R, 0, Math.PI * 2);
+    g.fillStyle = urgent ? '#4a1626' : this.data.face;       // the well the wedge sits in
+    g.fill();
+    g.strokeStyle = ink;
+    g.lineWidth = s * 0.035;
+    g.beginPath(); g.arc(m, m, R - s * 0.0175, 0, Math.PI * 2); g.stroke();
+    for (var i = 0; i < 12; i++) {                           // twelve ticks: a clock face without a number on it
+      var a = -Math.PI / 2 + i * Math.PI / 6, quarter = i % 3 === 0;
+      var r1 = R * (quarter ? 0.72 : 0.78), r2 = R * 0.86;
+      g.lineWidth = s * (quarter ? 0.035 : 0.018);
+      g.beginPath();
+      g.moveTo(m + Math.cos(a) * r1, m + Math.sin(a) * r1);
+      g.lineTo(m + Math.cos(a) * r2, m + Math.sin(a) * r2);
+      g.stroke();
+    }
+    this.texture.needsUpdate = true;
+  }
+});
+
 // The game. Its entity sits at the origin, so a bubble's local position is
 // also its world position — the dart hit-test relies on that.
 //
@@ -1563,7 +1696,7 @@ AFRAME.registerComponent('bubble-pop-game', {
     this.remaining = this.ROUND_SECS;
     this.running   = false;        // the clock waits for the first throw, so nobody loses time reading the signs
     this.over      = false;
-    this.shownSecs = -1;
+    this.shownState = '';           // the caption under the dial, redrawn only when it changes
     this.held    = { left: null, right: null, head: null };
     this.trails  = { left: [], right: [], head: [] };
 
@@ -2042,27 +2175,27 @@ AFRAME.registerComponent('bubble-pop-game', {
     this.updateSign();
   },
 
-  clockText: function () {
-    var secs = Math.max(0, Math.ceil(this.remaining));
-    return Math.floor(secs / 60) + ':' + ('0' + (secs % 60)).slice(-2);
-  },
-
-  // Redrawn only when the second on the face changes: a canvas texture upload
-  // every frame is a waste of a mobile GPU.
+  // The hand is moved straight on the component — a setAttribute every frame
+  // would put A-Frame's whole update path in the way of a turning clock. The
+  // caption below it only changes when the round does.
   updateClock: function () {
     var el = document.querySelector('#timer');
-    if (!el) return;
-    var secs = Math.max(0, Math.ceil(this.remaining));
-    if (secs === this.shownSecs && !this.over) return;
-    this.shownSecs = secs;
-    if (this.over) {
-      el.setAttribute('canvas-sign', { title: 'Time!', sub: 'round over', bg: '#7a2740' });
-      return;
+    if (el) {
+      var p = this.over ? 1 : 1 - Math.max(0, this.remaining) / this.ROUND_SECS;
+      var urgent = this.over || this.remaining <= 10;        // the last ten seconds turn red
+      var dial = el.components && el.components['clock-dial'];
+      if (dial) dial.setProgress(p, urgent);
+      else el.setAttribute('clock-dial', { progress: p, urgent: urgent });
     }
-    el.setAttribute('canvas-sign', {
-      title: this.clockText(),
-      sub: this.running ? 'left' : 'throw to start',
-      bg: secs <= 10 ? '#7a2740' : '#15324d'          // the last ten seconds turn red
+
+    var label = document.querySelector('#timer-label');
+    if (!label) return;
+    var state = this.over ? 'over' : this.running ? 'running' : 'idle';
+    if (state === this.shownState) return;
+    this.shownState = state;
+    label.setAttribute('canvas-sign', {
+      title: state === 'over' ? 'Time!' : state === 'running' ? 'time left' : 'throw to start',
+      bg: state === 'over' ? '#7a2740' : '#15324d'
     });
   },
 
@@ -2072,7 +2205,7 @@ AFRAME.registerComponent('bubble-pop-game', {
     this.remaining = this.ROUND_SECS;
     this.running = false;
     this.over = false;
-    this.shownSecs = -1;
+    this.shownState = '';
     this.buildWall();
     for (var i = 0; i < this.darts.length; i++) {
       var d = this.darts[i];
@@ -2291,9 +2424,14 @@ AFRAME.registerComponent('bubble-pop-game', {
   <a-entity id="score" position="-0.55 2.72 -3.05"
             canvas-sign="width: 1.8; height: 0.5; title: Popped 0; sub: 15 bubbles left"></a-entity>
 
-  <!-- The round clock, beside the score and readable from where the player stands. -->
-  <a-entity id="timer" position="0.95 2.72 -3.05"
-            canvas-sign="width: 0.9; height: 0.5; title: 0:30; sub: throw to start"></a-entity>
+  <!-- The round clock, beside the score and readable from where the player
+       stands: one hand, starting at the top and sweeping a whole turn
+       clockwise as the round runs out.
+       The caption sits above it: below the dial is where the top row of
+       bubbles floats. -->
+  <a-entity id="timer-label" position="0.95 3.09 -3.05"
+            canvas-sign="width: 0.88; height: 0.19; title: throw to start"></a-entity>
+  <a-entity id="timer" position="0.95 2.7 -3.05" clock-dial="radius: 0.26"></a-entity>
 
   <a-entity id="howto" position="0 0.78 -2.9"
             canvas-sign="width: 1.7; height: 0.24; bg: #1d4a6e; title: Grab a dart and throw it"></a-entity>
