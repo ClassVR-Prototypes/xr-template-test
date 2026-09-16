@@ -5,8 +5,8 @@
   "concept": "Pick darts off the racks beside you and throw them at a wall of floating bubbles; the wall rebuilds when cleared.",
   "dof": 6,
   "created": "2026-09-15T09:08:00Z",
-  "build": 7,
-  "sourceHash": "a731d4e4e21926d6f0dd6b2486631af1fe34c4fe848559df5ada0e3f53ba3b21",
+  "build": 8,
+  "sourceHash": "3f0b3be7f1927a093ff2329691d4476053d5334f5aca17f71c0b4b331d3d81ae",
   "libraries": [
     "aframe",
     "cannon"
@@ -29,7 +29,7 @@
   "pages": {
     "url": "https://classvr-prototypes.github.io/xr-template-test/bubble-pop/",
     "repo": "ClassVR-Prototypes/xr-template-test",
-    "build": 7,
+    "build": 8,
     "lastShared": "2026-09-16T07:57:17Z"
   }
 }
