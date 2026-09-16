@@ -8,7 +8,7 @@
 <!-- Build number. Shown in the panel before you enter VR, so you can tell at a
      glance whether the headset is running your newest version. The publish
      step increments this automatically whenever the file has changed. -->
-<script>window.BUILD = 8;</script>
+<script>window.BUILD = 9;</script>
 
 <!-- Controls shown on the panel, in two lists. When you add an interaction to
      the scene (grab, throw, press), add a line to `headset` so players know. -->
@@ -785,8 +785,8 @@ window.KIT = (function () {
 // the same canvas-texture route the kit uses for text.
 AFRAME.registerComponent('checker-ground', {
   schema: {
-    colorA: { default: '#a4d29a' },
-    colorB: { default: '#8bbf82' },
+    colorA: { default: '#b3dda9' },
+    colorB: { default: '#9ccb92' },
     cell:   { default: 1 }            // metres per square
   },
   init: function () {
@@ -2455,14 +2455,14 @@ AFRAME.registerComponent('bubble-pop-game', {
      headset the kit pins the eyes 1.6 m above the rig, hides the lasers, and any
      trigger selects what the player is looking at (right stick still turns). -->
 <a-scene xr-kit="dof: 6"
-  background="color: #bfe3f7"
+  background="color: #d4edfd"
   renderer="colorManagement: true; antialias: true; toneMapping: no"
   vr-mode-ui="enabled: true"
   device-orientation-permission-ui="enabled: true">
 
   <!-- ground and sky -->
-  <a-plane position="0 0 0" rotation="-90 0 0" width="40" height="40" color="#a4d29a" checker-ground></a-plane>
-  <a-sky color="#bfe3f7"></a-sky>
+  <a-plane position="0 0 0" rotation="-90 0 0" width="40" height="40" color="#b3dda9" checker-ground></a-plane>
+  <a-sky color="#d4edfd"></a-sky>
 
   <!-- light. three.js uses physical light units now — these values are
        roughly double what older tutorials suggest, and that is correct. -->
