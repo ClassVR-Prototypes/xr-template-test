@@ -8,7 +8,7 @@
 <!-- Build number. Shown in the panel before you enter VR, so you can tell at a
      glance whether the headset is running your newest version. The publish
      step increments this automatically whenever the file has changed. -->
-<script>window.BUILD = 6;</script>
+<script>window.BUILD = 7;</script>
 
 <!-- Controls shown on the panel, in two lists. When you add an interaction to
      the scene (grab, throw, press), add a line to `headset` so players know. -->
@@ -109,6 +109,18 @@ window.KIT_CHECKS = [
         var o = b.el.object3D.position;
         t.expect(Math.hypot(o.x - b.x, o.y - b.y, o.z - b.z) < 1e-6, 'a bubble is drawn somewhere other than where it floats');
       });
+  } },
+  { name: 'the wall is made of hexagons', run: function (t) {
+      var game = bubblePop();
+      t.expect(game, 'the game is not running on #game');
+      var b = game.bubbles.filter(function (x) { return x.alive; })[0];
+      t.expect(b, 'there were no bubbles on the wall to look at');
+      var g = b.el.getAttribute('geometry');
+      t.expect(g && g.primitive === 'cylinder', 'the wall is not built out of flat tiles');
+      t.expect(g.segmentsRadial === 6, 'the tiles have ' + g.segmentsRadial + ' sides, not six');
+      t.expect(b.el.getObject3D('mesh'), 'a hexagon has no shape drawn for it');
+      var r = b.el.getAttribute('rotation');
+      t.expect(Math.abs(r.x - 90) < 0.5, 'the hexagons are not turned to face the player');
   } },
   { name: 'a thrown dart bursts the bubble it hits', run: function (t) {
       var game = bubblePop();
@@ -1708,7 +1720,8 @@ AFRAME.registerComponent('bubble-pop-game', {
     var self = this, THREE = AFRAME.THREE;
 
     this.COLORS    = ['#ff9db0', '#ffcf8a', '#9fe6c7', '#9fc9ff', '#d9b3ff'];
-    this.RADIUS    = 0.19;
+    this.RADIUS    = 0.19;         // out to a hexagon's corner
+    this.THICK     = 0.07;         // how deep the hexagon tile is
     this.TOLERANCE = 0.05;         // a little forgiveness on top of the bubble's radius
     this.REBUILD_MS = 1200;
     this.ROUND_SECS = 30;          // half a minute a round: long enough to find your aim, short enough to want another go
@@ -2180,15 +2193,28 @@ AFRAME.registerComponent('bubble-pop-game', {
       for (var c = 0; c < d.cols; c++) {
         var x = (c - (d.cols - 1) / 2) * gapX;
         var y = baseY + r * gapY;
-        var el = document.createElement('a-sphere');
-        el.setAttribute('radius', this.RADIUS);
-        el.setAttribute('segments-width', 16);
-        el.setAttribute('segments-height', 12);
-        el.setAttribute('color', this.COLORS[(r * d.cols + c) % this.COLORS.length]);
-        el.setAttribute('opacity', 0.92);
-        el.setAttribute('transparent', true);
-        el.setAttribute('roughness', 0.25);
-        el.setAttribute('metalness', 0);
+        // A hexagon: a six-sided cylinder turned on its side so a flat face
+        // looks straight at the player. RADIUS is the distance out to a
+        // corner, so the tile is 2R tall corner to corner and a little
+        // narrower across the flats — it sits in the same space the round
+        // bubble did, and the dart's hit test is unchanged.
+        var el = document.createElement('a-entity');
+        el.setAttribute('geometry', {
+          primitive: 'cylinder',
+          radius: this.RADIUS,
+          height: this.THICK,
+          segmentsRadial: 6,
+          segmentsHeight: 1
+        });
+        el.setAttribute('material', {
+          color: this.COLORS[(r * d.cols + c) % this.COLORS.length],
+          opacity: 0.92,
+          transparent: true,
+          roughness: 0.25,
+          metalness: 0,
+          side: 'double'
+        });
+        el.setAttribute('rotation', '90 0 0');
         el.setAttribute('position', x + ' ' + y + ' ' + d.z);
         el.classList.add('bubble');
         this.el.appendChild(el);
@@ -2338,7 +2364,7 @@ AFRAME.registerComponent('bubble-pop-game', {
         var k = Math.min(1, b.popT / 0.2);
         var s = 1 + k * 0.6;
         b.el.object3D.scale.set(s, s, s);
-        b.el.setAttribute('opacity', 0.92 * (1 - k));
+        b.el.setAttribute('material', 'opacity', 0.92 * (1 - k));
         if (k >= 1) {
           if (b.el.parentNode) b.el.parentNode.removeChild(b.el);
           this.bubbles.splice(i, 1);
