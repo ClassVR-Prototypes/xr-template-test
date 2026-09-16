@@ -5,7 +5,7 @@
   "concept": "Pick darts off the racks beside you and throw them at a wall of floating bubbles; the wall rebuilds when cleared.",
   "dof": 6,
   "created": "2026-09-15T09:08:00Z",
-  "build": 8,
+  "build": 9,
   "sourceHash": "3f0b3be7f1927a093ff2329691d4476053d5334f5aca17f71c0b4b331d3d81ae",
   "libraries": [
     "aframe",
